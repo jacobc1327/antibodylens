@@ -31,8 +31,8 @@ services:
     ports:
       - "3000:3000"
     environment:
-      # In Compose, frontend must reach backend via the service name (not localhost).
-      REACT_APP_API_URL: http://backend:5000/api
+      # Browser runs on the host — use the published port (not the Docker service name).
+      REACT_APP_API_URL: http://localhost:5000/api
     depends_on:
       - backend
     volumes:

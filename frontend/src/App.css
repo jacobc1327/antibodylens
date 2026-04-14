@@ -129,6 +129,17 @@
        radial-gradient(ellipse 40% 35% at 40% 50%, rgba(20, 10, 40, 0.2), transparent),
        #040810;
    }
+
+  /* Real-time microscopy field canvas */
+  .cv-field {
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    pointer-events: none;
+    mix-blend-mode: screen;
+    opacity: 0.9;
+    filter: blur(0.2px) saturate(1.15);
+  }
    
    /* Vignette */
    .cv-vignette {
@@ -222,19 +233,28 @@
      box-shadow: 0 0 10px 4px rgba(139, 92, 246, 0.03);
    }
    
-   /* ===== Protein nodes ===== */
-   .cv-protein {
-     position: absolute; z-index: 10;
-     transform: translate(-50%, -50%);
-     border-radius: 50%;
-     cursor: pointer;
-     animation: cv-breathe 4s ease-in-out infinite;
-     transition: transform 0.25s ease, box-shadow 0.25s ease, opacity 0.3s ease;
-   }
-   .cv-protein.cv-hovered {
-     transform: translate(-50%, -50%) scale(1.6);
-     z-index: 15;
-   }
+  /* Anchor: centers the node at left/top % (motion must not override this translate) */
+  .cv-protein-anchor {
+    position: absolute;
+    z-index: 10;
+    transform: translate(-50%, -50%);
+    pointer-events: auto;
+  }
+
+  /* ===== Protein nodes ===== */
+  .cv-protein {
+    position: relative;
+    border-radius: 50%;
+    cursor: pointer;
+    /* Keep a very subtle shimmer, but motion is driven by spring transforms */
+    animation: cv-breathe 5.5s ease-in-out infinite;
+    transition: box-shadow 0.18s ease, opacity 0.25s ease, filter 0.25s ease;
+    will-change: transform;
+  }
+  .cv-protein.cv-hovered {
+    z-index: 15;
+    filter: brightness(1.1);
+  }
    .cv-protein.cv-dim {
      animation: none;
    }
@@ -342,6 +362,37 @@
    
    /* ===== Organelle SVG overlay ===== */
    .cv-organelles { pointer-events: none; }
+
+  .cv-empty-overlay {
+    position: absolute;
+    inset: 0;
+    z-index: 25;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 20px;
+    text-align: center;
+    pointer-events: none;
+    background: radial-gradient(ellipse 60% 50% at 50% 50%, rgba(4, 8, 16, 0.75), transparent);
+  }
+  .cv-empty-overlay p {
+    margin: 0;
+    font-size: 0.88rem;
+    color: var(--text-secondary);
+    max-width: 420px;
+  }
+  .cv-empty-hint {
+    font-size: 0.76rem !important;
+    color: var(--text-muted) !important;
+  }
+  .cv-empty-hint code {
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+    color: var(--cyan);
+    word-break: break-all;
+  }
    
    /* ================================================================ Autocomplete */
    .autocomplete-dropdown {

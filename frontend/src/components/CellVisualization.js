@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { getCellMap } from "../utils/api";
+import { motion, AnimatePresence } from "framer-motion";
 
 /* ---------------------------------------------------------------
    Positions as % of container (960×580 base)
@@ -36,6 +37,10 @@ const APP_HEX = {
 };
 const APPS = ["WB", "IHC", "IF", "FC", "ChIP", "ELISA", "IP"];
 
+function clamp(v, a, b) {
+  return Math.max(a, Math.min(b, v));
+}
+
 function hex2rgb(h) {
   const v = parseInt(h.slice(1), 16);
   return [(v >> 16) & 255, (v >> 8) & 255, v & 255];
@@ -69,7 +74,7 @@ function nodeSize(count) {
   return Math.min(Math.max(Math.sqrt(count || 1) * 1.4, 5), 14);
 }
 
-/* ----- Noise texture via canvas ----- */
+/* ----- Film-grain noise texture (static) ----- */
 function NoiseOverlay() {
   const ref = useRef(null);
   useEffect(() => {
@@ -91,6 +96,133 @@ function NoiseOverlay() {
         opacity: 0.4, pointerEvents: "none", zIndex: 1, mixBlendMode: "overlay",
         imageRendering: "pixelated" }} />
   );
+}
+
+/* ----- Animated microscopy field (GPU canvas) ----- */
+function MicroscopyField({ activeApp }) {
+  const ref = useRef(null);
+
+  useEffect(() => {
+    const canvas = ref.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d", { alpha: true });
+    if (!ctx) return;
+
+    let raf = 0;
+    let t0 = performance.now();
+
+    const points = Array.from({ length: 70 }, (_, i) => ({
+      id: i,
+      x: Math.random(),
+      y: Math.random(),
+      r: 0.5 + Math.random() * 1.8,
+      s: 0.35 + Math.random() * 1.25,
+      p: Math.random() * Math.PI * 2,
+    }));
+
+    const resize = () => {
+      const parent = canvas.parentElement;
+      const w = parent?.clientWidth || 960;
+      const h = parent?.clientHeight || 580;
+      const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+      canvas.width = Math.floor(w * dpr);
+      canvas.height = Math.floor(h * dpr);
+      canvas.style.width = `${w}px`;
+      canvas.style.height = `${h}px`;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    };
+
+    const ro = new ResizeObserver(resize);
+    ro.observe(canvas.parentElement);
+    resize();
+
+    const palette = (app) => {
+      if (!app) return { a: "#60a5fa", b: "#a78bfa" };
+      return { a: APP_HEX[app] || "#60a5fa", b: "#a78bfa" };
+    };
+
+    const draw = (now) => {
+      raf = requestAnimationFrame(draw);
+      const dt = Math.min(0.05, (now - t0) / 1000);
+      t0 = now;
+      const { a, b } = palette(activeApp);
+
+      const w = canvas.clientWidth || 960;
+      const h = canvas.clientHeight || 580;
+
+      ctx.clearRect(0, 0, w, h);
+
+      // Soft moving background gradient (subtle parallax)
+      const tt = now * 0.00012;
+      const gx = w * (0.5 + 0.07 * Math.sin(tt * 2.0));
+      const gy = h * (0.48 + 0.07 * Math.cos(tt * 1.7));
+      const grad = ctx.createRadialGradient(gx, gy, 20, w * 0.52, h * 0.52, Math.max(w, h) * 0.75);
+      grad.addColorStop(0, "rgba(15, 35, 70, 0.38)");
+      grad.addColorStop(0.45, "rgba(8, 18, 38, 0.12)");
+      grad.addColorStop(1, "rgba(0, 0, 0, 0)");
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, w, h);
+
+      // Additive “bokeh” specks and flow streaks
+      ctx.save();
+      ctx.globalCompositeOperation = "lighter";
+
+      // Bokeh
+      for (const p of points) {
+        p.p += dt * (0.4 + p.s * 0.6);
+        p.x = (p.x + dt * 0.008 * Math.cos(p.p + p.id)) % 1;
+        p.y = (p.y + dt * 0.006 * Math.sin(p.p * 1.3 - p.id)) % 1;
+
+        const x = p.x * w;
+        const y = p.y * h;
+        const r = p.r * (1.0 + 0.35 * Math.sin(p.p * 2.2));
+
+        const g = ctx.createRadialGradient(x, y, 0, x, y, 42 * r);
+        g.addColorStop(0, "rgba(255,255,255,0.045)");
+        g.addColorStop(0.25, "rgba(255,255,255,0.022)");
+        g.addColorStop(1, "rgba(255,255,255,0)");
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.arc(x, y, 42 * r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // Flow streaks (a few per frame)
+      ctx.lineCap = "round";
+      for (let i = 0; i < 18; i++) {
+        const x0 = (0.08 + 0.84 * Math.random()) * w;
+        const y0 = (0.12 + 0.76 * Math.random()) * h;
+        const ang = tt * 7 + (x0 / w) * 2.5 + (y0 / h) * 2.1;
+        const len = 14 + 30 * Math.random();
+        const x1 = x0 + Math.cos(ang) * len;
+        const y1 = y0 + Math.sin(ang) * len * 0.6;
+        ctx.strokeStyle = `rgba(96,165,250,${0.035 + 0.03 * Math.random()})`;
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.moveTo(x0, y0);
+        ctx.lineTo(x1, y1);
+        ctx.stroke();
+      }
+
+      // Chromatic “lens” bloom around nucleus region
+      const lens = ctx.createRadialGradient(w * 0.42, h * 0.5, 10, w * 0.42, h * 0.5, Math.max(w, h) * 0.33);
+      lens.addColorStop(0, `${a}22`);
+      lens.addColorStop(0.55, `${b}10`);
+      lens.addColorStop(1, "rgba(0,0,0,0)");
+      ctx.fillStyle = lens;
+      ctx.fillRect(0, 0, w, h);
+
+      ctx.restore();
+    };
+
+    raf = requestAnimationFrame(draw);
+    return () => {
+      cancelAnimationFrame(raf);
+      ro.disconnect();
+    };
+  }, [activeApp]);
+
+  return <canvas ref={ref} className="cv-field" aria-hidden="true" />;
 }
 
 /* ----- Organelle line art (SVG overlay) ----- */
@@ -138,6 +270,7 @@ export default function CellVisualization() {
   const [hov, setHov] = useState(null);
   const [app, setApp] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [mouse, setMouse] = useState({ x: 0.5, y: 0.5 });
 
   useEffect(() => {
     (async () => {
@@ -208,9 +341,20 @@ export default function CellVisualization() {
 
       {/* ===== THE CELL ===== */}
       <div className="cv-frame">
-        <div className="cv-viewport">
+        <div
+          className="cv-viewport"
+          onMouseMove={(e) => {
+            const r = e.currentTarget.getBoundingClientRect();
+            const x = (e.clientX - r.left) / r.width;
+            const y = (e.clientY - r.top) / r.height;
+            setMouse({ x: clamp(x, 0, 1), y: clamp(y, 0, 1) });
+          }}
+        >
           {/* Background */}
           <div className="cv-bg" />
+
+          {/* Real-time microscopy field */}
+          <MicroscopyField activeApp={app} />
 
           {/* Noise texture */}
           <NoiseOverlay />
@@ -240,77 +384,115 @@ export default function CellVisualization() {
             <div className="cv-nucleolus" />
           </div>
 
-          {/* Protein nodes */}
+          {/* Protein nodes — wrapper keeps translate(-50%,-50%); motion only animates inner */}
           {targets.map((t, i) => {
             const p = POS[t.gene_name] || { l: 50, t: 50, loc: "cytoplasm" };
             const c = getColor(t);
             const v = isVis(t);
             const sz = nodeSize(t.validation_count);
             const h = hov?.id === t.id;
+            const dx = (mouse.x - 0.5) * 10;
+            const dy = (mouse.y - 0.5) * 10;
 
             return (
               <div
                 key={t.id}
-                className={`cv-protein ${h ? "cv-hovered" : ""} ${!v ? "cv-dim" : ""}`}
-                style={{
-                  left: `${p.l}%`,
-                  top: `${p.t}%`,
-                  width: sz, height: sz,
-                  background: c,
-                  boxShadow: h ? glowHover(c) : glow(c, v ? 1 : 0.15),
-                  animationDelay: `${i * 0.28}s`,
-                  opacity: v ? 1 : 0.12,
-                }}
-                onClick={() => navigate(`/target/${t.id}`)}
-                onMouseEnter={() => setHov(t)}
-                onMouseLeave={() => setHov(null)}
+                className="cv-protein-anchor"
+                style={{ left: `${p.l}%`, top: `${p.t}%` }}
               >
-                <span className="cv-protein-center" />
-                <span className="cv-protein-label" style={{ opacity: h ? 1 : 0.6 }}>
-                  {t.gene_name}
-                </span>
+                <motion.div
+                  className={`cv-protein ${h ? "cv-hovered" : ""} ${!v ? "cv-dim" : ""}`}
+                  style={{
+                    width: sz,
+                    height: sz,
+                    background: c,
+                    boxShadow: h ? glowHover(c) : glow(c, v ? 1 : 0.15),
+                    animationDelay: `${i * 0.28}s`,
+                    opacity: v ? 1 : 0.12,
+                  }}
+                  initial={{ opacity: 0, scale: 0.6, x: 0, y: 0 }}
+                  animate={{
+                    opacity: v ? 1 : 0.12,
+                    scale: h ? 1.55 : 1,
+                    x: v ? dx * (0.12 + (i % 7) * 0.01) : 0,
+                    y: v ? dy * (0.12 + (i % 5) * 0.015) : 0,
+                  }}
+                  transition={{
+                    type: "spring",
+                    stiffness: 380,
+                    damping: 28,
+                    mass: 0.6,
+                  }}
+                  onClick={() => navigate(`/target/${t.id}`)}
+                  onMouseEnter={() => setHov(t)}
+                  onMouseLeave={() => setHov(null)}
+                >
+                  <span className="cv-protein-center" />
+                  <span className="cv-protein-label" style={{ opacity: h ? 1 : 0.6 }}>
+                    {t.gene_name}
+                  </span>
+                </motion.div>
               </div>
             );
           })}
 
           {/* Tooltip */}
-          {hov && (() => {
-            const p = POS[hov.gene_name] || { l: 50, t: 50 };
-            const lc = LOC_HEX[hov.subcellular_location] || "#34d399";
-            const flipX = p.l > 65;
-            const flipY = p.t < 22;
-            return (
-              <div className={`cv-tooltip ${flipX ? "fx" : ""} ${flipY ? "fy" : ""}`}
-                style={{ left: `${p.l}%`, top: `${p.t}%` }}>
-                <div className="cv-tip-inner">
-                  <div className="cv-tip-head">
-                    <span className="cv-tip-gene">{hov.gene_name}</span>
-                    <span className="cv-tip-loc" style={{ color: lc, borderColor: `${lc}88` }}>
-                      {hov.subcellular_location}
-                    </span>
-                  </div>
-                  <div className="cv-tip-name">{hov.protein_name}</div>
-                  <div className="cv-tip-div" />
-                  <div className="cv-tip-stats">
-                    <div><strong>{hov.antibody_count}</strong><small>antibodies</small></div>
-                    <div><strong>{hov.validation_count}</strong><small>validations</small></div>
-                    {hov.top_score && <div><strong>{hov.top_score}</strong><small>top score</small></div>}
-                  </div>
-                  {hov.by_application && Object.keys(hov.by_application).length > 0 && (
-                    <div className="cv-tip-apps">
-                      {Object.entries(hov.by_application).sort((a, b) => b[1] - a[1])
-                        .map(([ap, ct]) => (
-                          <span key={ap} style={{ borderColor: `${APP_HEX[ap]}88`, color: APP_HEX[ap] }}>
-                            {ap} {ct}
-                          </span>
-                        ))}
+          {targets.length === 0 && (
+            <div className="cv-empty-overlay" role="status">
+              <p>No protein data loaded.</p>
+              <p className="cv-empty-hint">
+                Start the backend, seed the database, then refresh:{" "}
+                <code>docker-compose exec backend python seed.py</code>
+              </p>
+            </div>
+          )}
+
+          <AnimatePresence>
+            {hov && (() => {
+              const p = POS[hov.gene_name] || { l: 50, t: 50 };
+              const lc = LOC_HEX[hov.subcellular_location] || "#34d399";
+              const flipX = p.l > 65;
+              const flipY = p.t < 22;
+              return (
+                <motion.div
+                  key={hov.id}
+                  className={`cv-tooltip ${flipX ? "fx" : ""} ${flipY ? "fy" : ""}`}
+                  style={{ left: `${p.l}%`, top: `${p.t}%` }}
+                  initial={{ opacity: 0, y: 8, scale: 0.98 }}
+                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                  exit={{ opacity: 0, y: 6, scale: 0.99 }}
+                  transition={{ type: "spring", stiffness: 380, damping: 30, mass: 0.7 }}
+                >
+                  <div className="cv-tip-inner">
+                    <div className="cv-tip-head">
+                      <span className="cv-tip-gene">{hov.gene_name}</span>
+                      <span className="cv-tip-loc" style={{ color: lc, borderColor: `${lc}88` }}>
+                        {hov.subcellular_location}
+                      </span>
                     </div>
-                  )}
-                  <div className="cv-tip-cta">Click to explore \u2192</div>
-                </div>
-              </div>
-            );
-          })()}
+                    <div className="cv-tip-name">{hov.protein_name}</div>
+                    <div className="cv-tip-div" />
+                    <div className="cv-tip-stats">
+                      <div><strong>{hov.antibody_count}</strong><small>antibodies</small></div>
+                      <div><strong>{hov.validation_count}</strong><small>validations</small></div>
+                      {hov.top_score && <div><strong>{hov.top_score}</strong><small>top score</small></div>}
+                    </div>
+                    {hov.by_application && Object.keys(hov.by_application).length > 0 && (
+                      <div className="cv-tip-apps">
+                        {Object.entries(hov.by_application).sort((a, b) => b[1] - a[1])
+                          .map(([ap, ct]) => (
+                            <span key={ap} style={{ borderColor: `${APP_HEX[ap]}88`, color: APP_HEX[ap] }}>
+                              {ap} {ct}
+                            </span>
+                          ))}
+                      </div>
+                    )}
+                    <div className="cv-tip-cta">Click to explore \u2192</div>
+                  </div>
+                </motion.div>
+              );
+            })()}
+          </AnimatePresence>
         </div>
       </div>
     </div>

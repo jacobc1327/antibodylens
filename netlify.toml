@@ -1,0 +1,10 @@
+[build]
+  base = "frontend"
+  command = "npm ci && npm run build"
+  publish = "build"
+
+# Single-page app routing (React Router)
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200

@@ -13,7 +13,16 @@ from psycopg2.extras import RealDictCursor
 from functools import wraps
 
 app = Flask(__name__)
-CORS(app)
+
+# CORS:
+# - Default: permissive (good for local dev)
+# - Production: set CORS_ORIGINS="https://your-site.netlify.app,https://yourdomain.com"
+_cors_origins = os.getenv("CORS_ORIGINS", "").strip()
+if _cors_origins:
+    origins = [o.strip() for o in _cors_origins.split(",") if o.strip()]
+    CORS(app, resources={r"/api/*": {"origins": origins}})
+else:
+    CORS(app)
 
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://localhost:5432/antibodylens")
 

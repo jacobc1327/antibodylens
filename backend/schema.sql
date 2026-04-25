@@ -62,7 +62,7 @@ CREATE TABLE confidence_scores (
     citation_score NUMERIC(4,2),              -- weighted by total citations
     application_breadth NUMERIC(4,2),         -- how many distinct apps validated
     recency_score NUMERIC(4,2),               -- weighted toward recent publications
-    positive_rate NUMERIC(4,2),               -- % of validations that were positive
+    positive_rate NUMERIC(5,2),               -- 0–100% (needs >4,2 so 100.00 fits)
     total_validations INTEGER DEFAULT 0,
     last_computed TIMESTAMP DEFAULT NOW()
 );

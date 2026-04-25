@@ -6,6 +6,7 @@ Run: flask run --debug
 import os
 import io
 import csv
+import time
 from flask import Flask, jsonify, request, Response
 from flask_cors import CORS
 import psycopg2
@@ -25,6 +26,47 @@ else:
     CORS(app)
 
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://localhost:5432/antibodylens")
+
+_CACHE = {}  # key -> (expires_at_epoch_s, payload_dict)
+
+
+def _cache_get(key: str):
+    now = time.time()
+    item = _CACHE.get(key)
+    if not item:
+        return None
+    exp, payload = item
+    if exp <= now:
+        _CACHE.pop(key, None)
+        return None
+    return payload
+
+
+def _cache_set(key: str, payload: dict, ttl_s: int):
+    _CACHE[key] = (time.time() + ttl_s, payload)
+
+
+def require_admin(f):
+    """
+    If ADMIN_TOKEN is set, require clients to provide it via:
+      - header: X-Admin-Token: <token>
+      - or query: ?token=<token>
+    If ADMIN_TOKEN is not set, the route is open (useful for local dev / demos).
+    """
+    token = os.getenv("ADMIN_TOKEN", "").strip()
+
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        if token:
+            provided = (
+                request.headers.get("X-Admin-Token", "").strip()
+                or request.args.get("token", "").strip()
+            )
+            if provided != token:
+                return jsonify({"error": "unauthorized"}), 401
+        return f(*args, **kwargs)
+
+    return wrapper
 
 # Subcellular location mapping — real biological localizations
 # Used by the Living Cell visualization
@@ -55,16 +97,19 @@ def get_db():
 def with_db(f):
     @wraps(f)
     def wrapper(*args, **kwargs):
-        conn = get_db()
+        conn = None
         try:
+            conn = get_db()
             result = f(conn, *args, **kwargs)
             conn.commit()
             return result
         except Exception as e:
-            conn.rollback()
+            if conn is not None:
+                conn.rollback()
             return jsonify({"error": str(e)}), 500
         finally:
-            conn.close()
+            if conn is not None:
+                conn.close()
     return wrapper
 
 
@@ -89,6 +134,12 @@ def get_cell_map(conn):
     Returns all targets with subcellular locations, validation stats,
     and per-application breakdowns for the Living Cell visualization.
     """
+    # Small TTL cache (safe for demo). Avoids recomputing aggregates on every page load.
+    cache_key = "cell-map"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return jsonify(cached)
+
     cur = conn.cursor()
 
     # Get targets with aggregate stats
@@ -135,7 +186,9 @@ def get_cell_map(conn):
         t_dict["by_application"] = app_map.get(t["id"], {})
         result.append(t_dict)
 
-    return jsonify({"targets": result})
+    payload = {"targets": result}
+    _cache_set(cache_key, payload, ttl_s=int(os.getenv("CELL_MAP_CACHE_TTL", "60")))
+    return jsonify(payload)
 
 
 # ---------------------------------------------------------------------------
@@ -497,6 +550,11 @@ def get_validation_heatmap(conn, target_id):
 @app.route("/api/targets/<int:target_id>/stats")
 @with_db
 def get_target_stats(conn, target_id):
+    cache_key = f"target-stats:{target_id}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return jsonify(cached)
+
     cur = conn.cursor()
     cur.execute("""
         SELECT a.id, a.vendor, a.clone_name, a.catalog_number,
@@ -532,12 +590,14 @@ def get_target_stats(conn, target_id):
     """, (target_id,))
     by_species = cur.fetchall()
 
-    return jsonify({
+    payload = {
         "top_antibodies": top_antibodies,
         "by_application": by_application,
         "by_year": by_year,
         "by_species": by_species,
-    })
+    }
+    _cache_set(cache_key, payload, ttl_s=int(os.getenv("TARGET_STATS_CACHE_TTL", "60")))
+    return jsonify(payload)
 
 
 @app.route("/api/applications")
@@ -550,6 +610,7 @@ def list_applications(conn):
 
 @app.route("/api/admin/recompute-scores", methods=["POST"])
 @with_db
+@require_admin
 def recompute_scores(conn):
     cur = conn.cursor()
     cur.execute("""
@@ -580,6 +641,12 @@ def recompute_scores(conn):
             total_validations = EXCLUDED.total_validations,
             last_computed = NOW()
     """)
+    # Invalidate cache for aggregates that depend on confidence_scores
+    _CACHE.pop("cell-map", None)
+    # target-stats cache is per-target; easiest is to clear all
+    for k in list(_CACHE.keys()):
+        if k.startswith("target-stats:"):
+            _CACHE.pop(k, None)
     return jsonify({"recomputed": cur.rowcount})
 
 

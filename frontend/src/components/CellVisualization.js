@@ -1,6 +1,13 @@
-import React, { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import React, {
+  useState,
+  useEffect,
+  useCallback,
+  useMemo,
+  useRef,
+  useLayoutEffect,
+} from "react";
 import { useNavigate } from "react-router-dom";
-import { getCellMap } from "../utils/api";
+import { getAntibodies, getCellMap } from "../utils/api";
 import { motion, AnimatePresence } from "framer-motion";
 
 /* ---------------------------------------------------------------
@@ -74,190 +81,185 @@ function nodeSize(count) {
   return Math.min(Math.max(Math.sqrt(count || 1) * 1.4, 5), 14);
 }
 
-/* ----- Film-grain noise texture (static) ----- */
-function NoiseOverlay() {
-  const ref = useRef(null);
-  useEffect(() => {
-    const c = ref.current;
-    if (!c) return;
-    const ctx = c.getContext("2d");
-    c.width = 200; c.height = 200;
-    const d = ctx.createImageData(200, 200);
-    for (let i = 0; i < d.data.length; i += 4) {
-      const v = Math.random() * 255;
-      d.data[i] = v; d.data[i + 1] = v; d.data[i + 2] = v;
-      d.data[i + 3] = 6;
-    }
-    ctx.putImageData(d, 0, 0);
-  }, []);
+/* Cell body geometry (viewBox units) — matches CSS membrane ellipse ~77%×78% of 960×580 */
+const CELL_CX = 480;
+const CELL_CY = 290;
+const CELL_RX = 368;
+const CELL_RY = 226;
+const CELL_CLIP_ID = "cvCellInteriorClip";
+
+/* ----- Static diagram: one membrane-bound interior (clip) + organelle sprites ----- */
+function CellDiagram() {
   return (
-    <canvas ref={ref} className="cv-noise"
-      style={{ position: "absolute", inset: 0, width: "100%", height: "100%",
-        opacity: 0.4, pointerEvents: "none", zIndex: 1, mixBlendMode: "overlay",
-        imageRendering: "pixelated" }} />
-  );
-}
+    <svg
+      viewBox="0 0 960 580"
+      className="cv-cell-diagram"
+      preserveAspectRatio="xMidYMid meet"
+      aria-hidden="true"
+    >
+      <defs>
+        <clipPath id={CELL_CLIP_ID}>
+          <ellipse cx={CELL_CX} cy={CELL_CY} rx={CELL_RX - 6} ry={CELL_RY - 6} />
+        </clipPath>
+        <radialGradient id="cvCytosol" cx="42%" cy="46%" r="68%">
+          <stop offset="0%" stopColor="#3d5a8c" stopOpacity="0.55" />
+          <stop offset="38%" stopColor="#243a62" stopOpacity="0.65" />
+          <stop offset="100%" stopColor="#0e182c" stopOpacity="0.35" />
+        </radialGradient>
+        <radialGradient id="cvPerinuclear" cx="38%" cy="50%" r="35%">
+          <stop offset="0%" stopColor="#6b4c86" stopOpacity="0.5" />
+          <stop offset="70%" stopColor="#3d2a50" stopOpacity="0.15" />
+          <stop offset="100%" stopColor="transparent" />
+        </radialGradient>
+        <linearGradient id="cvERGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stopColor="#a07090" />
+          <stop offset="100%" stopColor="#4f3558" />
+        </linearGradient>
+        <linearGradient id="cvMitoBody" x1="0%" y1="0%" x2="0%" y2="100%">
+          <stop offset="0%" stopColor="#ffc48a" />
+          <stop offset="100%" stopColor="#c44f1e" />
+        </linearGradient>
+        <linearGradient id="cvGolgiGrad" x1="20%" y1="0%" x2="80%" y2="100%">
+          <stop offset="0%" stopColor="#e892b0" />
+          <stop offset="100%" stopColor="#6e3050" />
+        </linearGradient>
+      </defs>
 
-/* ----- Animated microscopy field (GPU canvas) ----- */
-function MicroscopyField({ activeApp }) {
-  const ref = useRef(null);
+      {/* Plasma membrane — double line reads as a boundary, not a floating ring */}
+      <ellipse
+        cx={CELL_CX}
+        cy={CELL_CY}
+        rx={CELL_RX}
+        ry={CELL_RY}
+        fill="none"
+        stroke="rgba(56, 189, 248, 0.12)"
+        strokeWidth="10"
+      />
+      <ellipse
+        cx={CELL_CX}
+        cy={CELL_CY}
+        rx={CELL_RX}
+        ry={CELL_RY}
+        fill="none"
+        stroke="rgba(125, 211, 252, 0.35)"
+        strokeWidth="2.2"
+      />
+      <ellipse
+        cx={CELL_CX}
+        cy={CELL_CY}
+        rx={CELL_RX - 5}
+        ry={CELL_RY - 5}
+        fill="none"
+        stroke="rgba(15, 40, 72, 0.55)"
+        strokeWidth="1.5"
+      />
 
-  useEffect(() => {
-    const canvas = ref.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext("2d", { alpha: true });
-    if (!ctx) return;
+      {/* Everything below reads as *inside* the cell */}
+      <g clipPath={`url(#${CELL_CLIP_ID})`}>
+        <ellipse cx={CELL_CX} cy={CELL_CY} rx={CELL_RX} ry={CELL_RY} fill="url(#cvCytosol)" />
+        <ellipse cx={CELL_CX} cy={CELL_CY} rx={CELL_RX} ry={CELL_RY} fill="url(#cvPerinuclear)" />
 
-    let raf = 0;
-    let t0 = performance.now();
+        {/* Nuclear envelope hint (does not duplicate the CSS nucleus hub) */}
+        <ellipse
+          cx="385"
+          cy="290"
+          rx="118"
+          ry="148"
+          fill="none"
+          stroke="rgba(167, 139, 250, 0.12)"
+          strokeWidth="2"
+        />
+        <ellipse
+          cx="382"
+          cy="288"
+          rx="102"
+          ry="128"
+          fill="rgba(30, 18, 48, 0.18)"
+          stroke="rgba(139, 92, 246, 0.1)"
+          strokeWidth="1"
+        />
 
-    const points = Array.from({ length: 70 }, (_, i) => ({
-      id: i,
-      x: Math.random(),
-      y: Math.random(),
-      r: 0.5 + Math.random() * 1.8,
-      s: 0.35 + Math.random() * 1.25,
-      p: Math.random() * Math.PI * 2,
-    }));
+        {/* Rough ER — single continuous ribbon hugging the nuclear zone */}
+        <path
+          fill="url(#cvERGrad)"
+          fillOpacity="0.48"
+          d="M 285 175 C 360 145 455 155 520 198 C 575 235 595 295 565 355 C 530 415 445 430 365 405 C 285 380 235 320 245 255 C 252 210 265 188 285 175 Z"
+        />
+        <path
+          fill="#4a3558"
+          fillOpacity="0.32"
+          d="M 305 200 C 375 178 465 188 515 228 C 548 268 535 325 495 360 C 445 398 375 392 330 360 C 285 325 275 255 305 200 Z"
+        />
 
-    const resize = () => {
-      const parent = canvas.parentElement;
-      const w = parent?.clientWidth || 960;
-      const h = parent?.clientHeight || 580;
-      const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
-      canvas.width = Math.floor(w * dpr);
-      canvas.height = Math.floor(h * dpr);
-      canvas.style.width = `${w}px`;
-      canvas.style.height = `${h}px`;
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    };
+        {/* Cortical ER / cytosol shading (right periphery) */}
+        <path
+          fill="#2f4a78"
+          fillOpacity="0.35"
+          d="M 620 215 C 705 195 765 235 775 295 C 782 350 745 405 685 418 C 625 428 575 395 565 340 C 558 285 585 235 620 215 Z"
+        />
 
-    const ro = new ResizeObserver(resize);
-    ro.observe(canvas.parentElement);
-    resize();
+        {/* Mitochondria — inside membrane; clustered like textbook layout */}
+        <g opacity="0.96">
+          <g transform="rotate(-22 712 212)">
+            <ellipse cx="712" cy="212" rx="34" ry="14" fill="url(#cvMitoBody)" />
+            <path
+              d="M 686 210 Q 712 204 738 210 M 688 216 Q 712 222 736 216"
+              stroke="#5c2408"
+              strokeWidth="1.25"
+              fill="none"
+              strokeLinecap="round"
+              opacity="0.55"
+            />
+          </g>
+          <g transform="rotate(12 732 398)">
+            <ellipse cx="732" cy="398" rx="28" ry="11" fill="url(#cvMitoBody)" />
+            <path
+              d="M 712 396 Q 732 391 752 396 M 714 401 Q 732 406 750 401"
+              stroke="#5c2408"
+              strokeWidth="1.1"
+              fill="none"
+              strokeLinecap="round"
+              opacity="0.5"
+            />
+          </g>
+          <g transform="rotate(-6 312 372)">
+            <ellipse cx="312" cy="372" rx="30" ry="12" fill="url(#cvMitoBody)" />
+            <path
+              d="M 290 370 Q 312 365 334 370 M 292 375 Q 312 380 332 375"
+              stroke="#5c2408"
+              strokeWidth="1.1"
+              fill="none"
+              strokeLinecap="round"
+              opacity="0.5"
+            />
+          </g>
+        </g>
 
-    const palette = (app) => {
-      if (!app) return { a: "#60a5fa", b: "#a78bfa" };
-      return { a: APP_HEX[app] || "#60a5fa", b: "#a78bfa" };
-    };
+        {/* Golgi — stacked sacs, medial region */}
+        <g opacity="0.68">
+          <ellipse cx="608" cy="292" rx="44" ry="10" fill="url(#cvGolgiGrad)" />
+          <ellipse cx="610" cy="304" rx="46" ry="9.5" fill="#9d3f62" />
+          <ellipse cx="612" cy="316" rx="42" ry="8.5" fill="#7a3352" />
+          <ellipse cx="614" cy="327" rx="36" ry="7.5" fill="#5c2842" />
+        </g>
 
-    const draw = (now) => {
-      raf = requestAnimationFrame(draw);
-      const dt = Math.min(0.05, (now - t0) / 1000);
-      t0 = now;
-      const { a, b } = palette(activeApp);
-
-      const w = canvas.clientWidth || 960;
-      const h = canvas.clientHeight || 580;
-
-      ctx.clearRect(0, 0, w, h);
-
-      // Soft moving background gradient (subtle parallax)
-      const tt = now * 0.00012;
-      const gx = w * (0.5 + 0.07 * Math.sin(tt * 2.0));
-      const gy = h * (0.48 + 0.07 * Math.cos(tt * 1.7));
-      const grad = ctx.createRadialGradient(gx, gy, 20, w * 0.52, h * 0.52, Math.max(w, h) * 0.75);
-      grad.addColorStop(0, "rgba(15, 35, 70, 0.38)");
-      grad.addColorStop(0.45, "rgba(8, 18, 38, 0.12)");
-      grad.addColorStop(1, "rgba(0, 0, 0, 0)");
-      ctx.fillStyle = grad;
-      ctx.fillRect(0, 0, w, h);
-
-      // Additive “bokeh” specks and flow streaks
-      ctx.save();
-      ctx.globalCompositeOperation = "lighter";
-
-      // Bokeh
-      for (const p of points) {
-        p.p += dt * (0.4 + p.s * 0.6);
-        p.x = (p.x + dt * 0.008 * Math.cos(p.p + p.id)) % 1;
-        p.y = (p.y + dt * 0.006 * Math.sin(p.p * 1.3 - p.id)) % 1;
-
-        const x = p.x * w;
-        const y = p.y * h;
-        const r = p.r * (1.0 + 0.35 * Math.sin(p.p * 2.2));
-
-        const g = ctx.createRadialGradient(x, y, 0, x, y, 42 * r);
-        g.addColorStop(0, "rgba(255,255,255,0.045)");
-        g.addColorStop(0.25, "rgba(255,255,255,0.022)");
-        g.addColorStop(1, "rgba(255,255,255,0)");
-        ctx.fillStyle = g;
-        ctx.beginPath();
-        ctx.arc(x, y, 42 * r, 0, Math.PI * 2);
-        ctx.fill();
-      }
-
-      // Flow streaks (a few per frame)
-      ctx.lineCap = "round";
-      for (let i = 0; i < 18; i++) {
-        const x0 = (0.08 + 0.84 * Math.random()) * w;
-        const y0 = (0.12 + 0.76 * Math.random()) * h;
-        const ang = tt * 7 + (x0 / w) * 2.5 + (y0 / h) * 2.1;
-        const len = 14 + 30 * Math.random();
-        const x1 = x0 + Math.cos(ang) * len;
-        const y1 = y0 + Math.sin(ang) * len * 0.6;
-        ctx.strokeStyle = `rgba(96,165,250,${0.035 + 0.03 * Math.random()})`;
-        ctx.lineWidth = 1.2;
-        ctx.beginPath();
-        ctx.moveTo(x0, y0);
-        ctx.lineTo(x1, y1);
-        ctx.stroke();
-      }
-
-      // Chromatic “lens” bloom around nucleus region
-      const lens = ctx.createRadialGradient(w * 0.42, h * 0.5, 10, w * 0.42, h * 0.5, Math.max(w, h) * 0.33);
-      lens.addColorStop(0, `${a}22`);
-      lens.addColorStop(0.55, `${b}10`);
-      lens.addColorStop(1, "rgba(0,0,0,0)");
-      ctx.fillStyle = lens;
-      ctx.fillRect(0, 0, w, h);
-
-      ctx.restore();
-    };
-
-    raf = requestAnimationFrame(draw);
-    return () => {
-      cancelAnimationFrame(raf);
-      ro.disconnect();
-    };
-  }, [activeApp]);
-
-  return <canvas ref={ref} className="cv-field" aria-hidden="true" />;
-}
-
-/* ----- Organelle line art (SVG overlay) ----- */
-function Organelles() {
-  return (
-    <svg viewBox="0 0 960 580" className="cv-organelles"
-      style={{ position: "absolute", inset: 0, width: "100%", height: "100%",
-        pointerEvents: "none", zIndex: 2 }}>
-      {/* ER */}
-      <g opacity="0.25" stroke="#34d399" fill="none" strokeWidth="1.8" strokeLinecap="round">
-        <path d="M455,235 Q482,218 508,235 Q534,252 560,235 Q586,218 610,237" />
-        <path d="M460,252 Q488,237 512,252 Q537,268 562,252 Q586,237 612,254" />
-        <path d="M460,348 Q488,334 514,348 Q540,362 565,348" />
-      </g>
-      {/* Mitochondria */}
-      <g opacity="0.22" fill="none" stroke="#fb923c" strokeWidth="1.3">
-        <ellipse cx="695" cy="215" rx="22" ry="9" transform="rotate(-22,695,215)" />
-        <ellipse cx="695" cy="215" rx="13" ry="5" transform="rotate(-22,695,215)" />
-        <ellipse cx="735" cy="398" rx="18" ry="7.5" transform="rotate(16,735,398)" />
-        <ellipse cx="735" cy="398" rx="10" ry="4" transform="rotate(16,735,398)" />
-        <ellipse cx="295" cy="362" rx="20" ry="8" transform="rotate(-10,295,362)" />
-        <ellipse cx="295" cy="362" rx="12" ry="4.5" transform="rotate(-10,295,362)" />
-      </g>
-      {/* Golgi */}
-      <g opacity="0.18" fill="none" stroke="#fbbf24" strokeWidth="1.4" strokeLinecap="round">
-        <path d="M598,308 Q618,296 638,308" />
-        <path d="M595,318 Q618,306 641,318" />
-        <path d="M592,328 Q618,316 644,328" />
-      </g>
-      {/* Ribosomes */}
-      <g opacity="0.08" fill="#94a3b8">
-        {[[515,288],[535,308],[555,290],[528,342],[548,328],
-          [615,258],[630,278],[645,253],[615,338],[635,358],
-          [505,368],[525,383],[548,368],[485,343]
-        ].map(([x, y], i) => <circle key={i} cx={x} cy={y} r="1.3" />)}
+        {/* Vesicles + ribosomes — sparse, inside cell only */}
+        <g fill="#6a8cc8" fillOpacity="0.38">
+          <circle cx="528" cy="248" r="4.5" />
+          <circle cx="552" cy="272" r="3.8" />
+          <circle cx="498" cy="328" r="4" />
+          <circle cx="668" cy="262" r="3.2" />
+          <circle cx="398" cy="322" r="3.2" />
+          <circle cx="442" cy="348" r="3.6" />
+        </g>
+        <g fill="#a8b8d8" fillOpacity="0.22">
+          {[
+            [522, 288], [546, 302], [566, 282], [534, 332], [558, 318],
+            [628, 248], [648, 268], [512, 366], [492, 322], [578, 348],
+          ].map(([x, y], i) => (
+            <circle key={i} cx={x} cy={y} r="1.35" />
+          ))}
+        </g>
       </g>
     </svg>
   );
@@ -269,8 +271,15 @@ export default function CellVisualization() {
   const [targets, setTargets] = useState([]);
   const [hov, setHov] = useState(null);
   const [app, setApp] = useState(null);
+  const [filterMode, setFilterMode] = useState("dim"); // "dim" | "hide"
   const [loading, setLoading] = useState(true);
   const [mouse, setMouse] = useState({ x: 0.5, y: 0.5 });
+  const [tipFixed, setTipFixed] = useState(null);
+  const anchorRefs = useRef({});
+  const tipRef = useRef(null);
+  const [selected, setSelected] = useState(null);
+  const [panelAbs, setPanelAbs] = useState([]);
+  const [panelLoading, setPanelLoading] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -280,18 +289,75 @@ export default function CellVisualization() {
     })();
   }, []);
 
-  // Pre-compute particles
-  const particles = useMemo(() =>
-    Array.from({ length: 45 }, (_, i) => ({
-      id: i,
-      left: 8 + Math.random() * 84,
-      top: 4 + Math.random() * 92,
-      size: 1 + Math.random() * 2,
-      dur: 14 + Math.random() * 22,
-      del: -Math.random() * 25,
-      dx: -12 + Math.random() * 24,
-      dy: -(8 + Math.random() * 20),
-    })), []);
+  const openPanel = useCallback(async (t) => {
+    setSelected(t);
+    setPanelLoading(true);
+    try {
+      const { data } = await getAntibodies(t.id, { sort: "score", per_page: 5, page: 1 });
+      setPanelAbs(data.antibodies || []);
+    } catch (e) {
+      console.error(e);
+      setPanelAbs([]);
+    } finally {
+      setPanelLoading(false);
+    }
+  }, []);
+
+  const closePanel = useCallback(() => {
+    setSelected(null);
+    setPanelAbs([]);
+    setPanelLoading(false);
+  }, []);
+
+  const layoutTooltip = useCallback(() => {
+    if (!hov) {
+      setTipFixed(null);
+      return;
+    }
+    const anchor = anchorRefs.current[hov.id];
+    if (!anchor) return;
+    const a = anchor.getBoundingClientRect();
+    const tip = tipRef.current;
+    const margin = 12;
+    const ew = Math.min(300, Math.max(200, tip?.offsetWidth || 260));
+    const eh = Math.min(400, Math.max(120, tip?.offsetHeight || 200));
+    const cx = a.left + a.width / 2;
+    const cy = a.top + a.height / 2;
+    let left = cx - ew / 2;
+    let top = cy - eh - 16;
+    if (top < margin) top = cy + Math.max(a.height, 12) / 2 + 14;
+    if (top + eh > window.innerHeight - margin) {
+      top = window.innerHeight - eh - margin;
+    }
+    left = clamp(left, margin, window.innerWidth - ew - margin);
+    top = clamp(top, margin, window.innerHeight - eh - margin);
+    setTipFixed({ left, top });
+  }, [hov]);
+
+  useLayoutEffect(() => {
+    if (!hov) {
+      setTipFixed(null);
+      return;
+    }
+    layoutTooltip();
+    const id = requestAnimationFrame(() => {
+      layoutTooltip();
+      requestAnimationFrame(layoutTooltip);
+    });
+    window.addEventListener("resize", layoutTooltip);
+    window.addEventListener("scroll", layoutTooltip, true);
+    let ro = null;
+    if (tipRef.current) {
+      ro = new ResizeObserver(() => layoutTooltip());
+      ro.observe(tipRef.current);
+    }
+    return () => {
+      cancelAnimationFrame(id);
+      window.removeEventListener("resize", layoutTooltip);
+      window.removeEventListener("scroll", layoutTooltip, true);
+      ro?.disconnect();
+    };
+  }, [hov, layoutTooltip]);
 
   const getColor = useCallback((t) => {
     if (app) {
@@ -306,6 +372,11 @@ export default function CellVisualization() {
     [app]
   );
 
+  const filterMatchCount = useMemo(() => {
+    if (!app || !targets.length) return null;
+    return targets.filter((t) => (t.by_application?.[app] || 0) > 0).length;
+  }, [app, targets]);
+
   if (loading) return (
     <div className="cell-loading"><div className="cell-loading-dot" />Initializing cell...</div>
   );
@@ -314,13 +385,29 @@ export default function CellVisualization() {
     <div className="cell-viz-wrapper">
       {/* Filters */}
       <div className="cell-filters">
-        <button className={`cell-filter-pill ${!app ? "active" : ""}`}
-          onClick={() => setApp(null)}>All</button>
+        <button
+          type="button"
+          className={`cell-filter-pill ${!app ? "active" : ""}`}
+          title="Show every target (color by subcellular location)"
+          onClick={() => setApp(null)}
+        >
+          All
+        </button>
         {APPS.map((a) => (
-          <button key={a}
+          <button
+            key={a}
+            type="button"
             className={`cell-filter-pill ${app === a ? "active" : ""}`}
             style={app === a ? { background: APP_HEX[a], borderColor: APP_HEX[a] } : {}}
-            onClick={() => setApp(app === a ? null : a)}>{a}</button>
+            title={
+              app === a
+                ? "Clear filter"
+                : `Show only targets with ${a} validation records (others hidden)`
+            }
+            onClick={() => setApp(app === a ? null : a)}
+          >
+            {a}
+          </button>
         ))}
       </div>
 
@@ -331,13 +418,66 @@ export default function CellVisualization() {
             <span className="legend-dot" style={{ background: c, boxShadow: `0 0 6px 2px ${c}55` }} />{l}
           </span>
         )) : (
-          <span className="legend-item">
+          <span className="legend-item cell-legend-filter">
             <span className="legend-dot" style={{ background: APP_HEX[app], boxShadow: `0 0 6px 2px ${APP_HEX[app]}55` }} />
-            Validated for {app}
-            <span className="legend-dot dim" />No data
+            <span>
+              <strong>Assay filter:</strong> only targets with ≥1 <strong>{app}</strong> validation stay visible
+              ({filterMatchCount ?? "—"} of {targets.length}).
+            </span>
+          </span>
+        )}
+
+        {app && (
+          <span className="legend-item cell-filter-mode">
+            <span className="cell-filter-mode-label">Others:</span>
+            <button
+              type="button"
+              className={`cell-filter-mode-btn ${filterMode === "dim" ? "active" : ""}`}
+              onClick={() => setFilterMode("dim")}
+              title="Keep context: non-matching targets are dimmed"
+            >
+              Dim
+            </button>
+            <button
+              type="button"
+              className={`cell-filter-mode-btn ${filterMode === "hide" ? "active" : ""}`}
+              onClick={() => setFilterMode("hide")}
+              title="Focus: non-matching targets are hidden"
+            >
+              Hide
+            </button>
           </span>
         )}
       </div>
+
+      {app && targets.length > 0 && filterMatchCount !== null && (
+        <div
+          className={
+            filterMatchCount === targets.length
+              ? "cell-filter-status cell-filter-status--warn"
+              : filterMatchCount === 0
+                ? "cell-filter-status cell-filter-status--warn"
+                : "cell-filter-status"
+          }
+        >
+          {filterMatchCount === targets.length ? (
+            <>
+              Every target still has <strong>{app}</strong> data — usually from <strong>stacked seeds</strong>{" "}
+              (old runs appended antibodies). Pull the latest code and run{" "}
+              <code className="cell-filter-code">docker compose exec backend python seed.py</code>
+              {" "}
+              once (it now clears antibodies first), then refresh this page.
+            </>
+          ) : filterMatchCount === 0 ? (
+            <>No targets have {app} validations in this database. Try another assay or All.</>
+          ) : (
+            <>
+              {filterMatchCount} target{filterMatchCount === 1 ? "" : "s"} match; the rest are hidden until you
+              choose <strong>All</strong>.
+            </>
+          )}
+        </div>
+      )}
 
       {/* ===== THE CELL ===== */}
       <div className="cv-frame">
@@ -350,34 +490,9 @@ export default function CellVisualization() {
             setMouse({ x: clamp(x, 0, 1), y: clamp(y, 0, 1) });
           }}
         >
-          {/* Background */}
           <div className="cv-bg" />
-
-          {/* Real-time microscopy field */}
-          <MicroscopyField activeApp={app} />
-
-          {/* Noise texture */}
-          <NoiseOverlay />
-
-          {/* Vignette */}
+          <CellDiagram />
           <div className="cv-vignette" />
-
-          {/* Particles */}
-          {particles.map((pt) => (
-            <span key={pt.id} className="cv-particle" style={{
-              left: `${pt.left}%`, top: `${pt.top}%`,
-              width: pt.size, height: pt.size,
-              animationDuration: `${pt.dur}s`,
-              animationDelay: `${pt.del}s`,
-              "--dx": `${pt.dx}px`, "--dy": `${pt.dy}px`,
-            }} />
-          ))}
-
-          {/* Cell membrane */}
-          <div className="cv-membrane" />
-
-          {/* Organelle SVG overlay */}
-          <Organelles />
 
           {/* Nucleus */}
           <div className="cv-nucleus">
@@ -393,12 +508,23 @@ export default function CellVisualization() {
             const h = hov?.id === t.id;
             const dx = (mouse.x - 0.5) * 10;
             const dy = (mouse.y - 0.5) * 10;
+            const show = !app || v || filterMode === "dim";
 
             return (
               <div
                 key={t.id}
+                ref={(el) => {
+                  if (el) anchorRefs.current[t.id] = el;
+                  else delete anchorRefs.current[t.id];
+                }}
                 className="cv-protein-anchor"
-                style={{ left: `${p.l}%`, top: `${p.t}%` }}
+                style={{
+                  left: `${p.l}%`,
+                  top: `${p.t}%`,
+                  visibility: show ? "visible" : "hidden",
+                  pointerEvents: v ? "auto" : "none",
+                }}
+                aria-hidden={!show}
               >
                 <motion.div
                   className={`cv-protein ${h ? "cv-hovered" : ""} ${!v ? "cv-dim" : ""}`}
@@ -408,11 +534,10 @@ export default function CellVisualization() {
                     background: c,
                     boxShadow: h ? glowHover(c) : glow(c, v ? 1 : 0.15),
                     animationDelay: `${i * 0.28}s`,
-                    opacity: v ? 1 : 0.12,
                   }}
                   initial={{ opacity: 0, scale: 0.6, x: 0, y: 0 }}
                   animate={{
-                    opacity: v ? 1 : 0.12,
+                    opacity: v ? 1 : (show ? 0.18 : 0),
                     scale: h ? 1.55 : 1,
                     x: v ? dx * (0.12 + (i % 7) * 0.01) : 0,
                     y: v ? dy * (0.12 + (i % 5) * 0.015) : 0,
@@ -423,8 +548,8 @@ export default function CellVisualization() {
                     damping: 28,
                     mass: 0.6,
                   }}
-                  onClick={() => navigate(`/target/${t.id}`)}
-                  onMouseEnter={() => setHov(t)}
+                  onClick={() => v && openPanel(t)}
+                  onMouseEnter={() => v && setHov(t)}
                   onMouseLeave={() => setHov(null)}
                 >
                   <span className="cv-protein-center" />
@@ -449,19 +574,36 @@ export default function CellVisualization() {
 
           <AnimatePresence>
             {hov && (() => {
-              const p = POS[hov.gene_name] || { l: 50, t: 50 };
               const lc = LOC_HEX[hov.subcellular_location] || "#34d399";
-              const flipX = p.l > 65;
-              const flipY = p.t < 22;
               return (
                 <motion.div
                   key={hov.id}
-                  className={`cv-tooltip ${flipX ? "fx" : ""} ${flipY ? "fy" : ""}`}
-                  style={{ left: `${p.l}%`, top: `${p.t}%` }}
-                  initial={{ opacity: 0, y: 8, scale: 0.98 }}
-                  animate={{ opacity: 1, y: 0, scale: 1 }}
-                  exit={{ opacity: 0, y: 6, scale: 0.99 }}
-                  transition={{ type: "spring", stiffness: 380, damping: 30, mass: 0.7 }}
+                  ref={tipRef}
+                  className="cv-tooltip cv-tooltip--fixed"
+                  style={
+                    tipFixed
+                      ? {
+                          position: "fixed",
+                          left: tipFixed.left,
+                          top: tipFixed.top,
+                          transform: "none",
+                        }
+                      : {
+                          position: "fixed",
+                          left: 0,
+                          top: 0,
+                          width: 1,
+                          height: 1,
+                          overflow: "hidden",
+                          opacity: 0,
+                          visibility: "hidden",
+                          pointerEvents: "none",
+                        }
+                  }
+                  initial={{ opacity: 0, scale: 0.98 }}
+                  animate={{ opacity: tipFixed ? 1 : 0, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.99 }}
+                  transition={{ type: "spring", stiffness: 420, damping: 32, mass: 0.65 }}
                 >
                   <div className="cv-tip-inner">
                     <div className="cv-tip-head">
@@ -487,7 +629,7 @@ export default function CellVisualization() {
                           ))}
                       </div>
                     )}
-                    <div className="cv-tip-cta">Click to explore \u2192</div>
+                    <div className="cv-tip-cta">Click to explore →</div>
                   </div>
                 </motion.div>
               );
@@ -495,6 +637,74 @@ export default function CellVisualization() {
           </AnimatePresence>
         </div>
       </div>
+
+      <AnimatePresence>
+        {selected && (
+          <motion.aside
+            key="cell-panel"
+            className="cell-side-panel"
+            initial={{ opacity: 0, x: 16 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: 16 }}
+            transition={{ type: "spring", stiffness: 420, damping: 34, mass: 0.8 }}
+          >
+            <div className="cell-panel-head">
+              <div>
+                <div className="cell-panel-title">{selected.gene_name}</div>
+                <div className="cell-panel-sub">{selected.protein_name}</div>
+              </div>
+              <button type="button" className="cell-panel-close" onClick={closePanel} aria-label="Close">
+                ✕
+              </button>
+            </div>
+
+            <div className="cell-panel-meta">
+              <span className="cell-panel-pill">{selected.subcellular_location}</span>
+              <span className="cell-panel-stat"><strong>{selected.antibody_count}</strong> antibodies</span>
+              <span className="cell-panel-stat"><strong>{selected.validation_count}</strong> validations</span>
+              {selected.top_score && (
+                <span className="cell-panel-stat"><strong>{selected.top_score}</strong> top score</span>
+              )}
+            </div>
+
+            <div className="cell-panel-actions">
+              <button type="button" className="cell-panel-btn" onClick={() => navigate(`/target/${selected.id}`)}>
+                Open target page →
+              </button>
+            </div>
+
+            <div className="cell-panel-section">
+              <div className="cell-panel-section-title">Top antibodies</div>
+              {panelLoading ? (
+                <div className="cell-panel-muted">Loading…</div>
+              ) : panelAbs.length === 0 ? (
+                <div className="cell-panel-muted">No antibodies found.</div>
+              ) : (
+                <ul className="cell-panel-list">
+                  {panelAbs.map((ab) => (
+                    <li key={ab.id}>
+                      <button
+                        type="button"
+                        className="cell-panel-row"
+                        onClick={() => navigate(`/antibody/${ab.id}`)}
+                        title="Open antibody detail"
+                      >
+                        <span className="cell-panel-row-main">
+                          <span className="cell-panel-vendor">{ab.vendor}</span>
+                          <span className="cell-panel-clone"> — {ab.clone_name || ab.catalog_number}</span>
+                        </span>
+                        <span className="cell-panel-score">
+                          {ab.overall_score ? Number(ab.overall_score).toFixed(1) : "—"}
+                        </span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </motion.aside>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

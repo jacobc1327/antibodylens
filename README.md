@@ -56,6 +56,36 @@ npm install
 npm start
 ```
 
+## Importing real antibody catalogs (CSV)
+
+AntibodyLens can import **real antibody rows** (vendor / catalog / clone / isotype / RRID) from a CSV.
+Most catalogs do **not** include structured validation evidence, so imported antibodies will typically have
+no confidence score until you also load validations.
+
+1) Put a CSV somewhere under `backend/` (example: `backend/data/antibodies.csv`).
+
+2) CSV header should include at least:
+- `gene_name` (or `target_gene`)
+- `vendor`
+
+Optional columns:
+`catalog_number`, `clone_name`, `host_species`, `clonality`, `isotype`, `ab_registry_id` (RRID),
+`uniprot_id`, `protein_name`, `organism`
+
+3) Run the importer:
+
+```bash
+cd backend
+export DATABASE_URL="postgresql://postgres:postgres@localhost:5432/antibodylens"
+python import_antibodies.py --csv data/antibodies.csv --create-missing-targets
+```
+
+If you only want to validate without writing:
+
+```bash
+python import_antibodies.py --csv data/antibodies.csv --create-missing-targets --dry-run
+```
+
 ## API Endpoints
 
 | Endpoint | Description |

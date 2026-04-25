@@ -17,6 +17,7 @@ export default function TargetPage() {
     application: "",
     species: "",
     host: "",
+    clonality: "",
     sort: "score",
     page: 1,
   });
@@ -70,6 +71,25 @@ export default function TargetPage() {
     }
   };
 
+  const applyPreset = (preset) => {
+    const base = { ...filters, page: 1 };
+    if (preset === "wb_human") {
+      setFilters({ ...base, application: "WB", species: "Human", sort: "score" });
+    } else if (preset === "ihc_human") {
+      setFilters({ ...base, application: "IHC", species: "Human", sort: "score" });
+    } else if (preset === "top_score") {
+      setFilters({ ...base, application: "", species: "", host: "", clonality: "", sort: "score" });
+    } else if (preset === "recent") {
+      setFilters({ ...base, sort: "recent" });
+    } else if (preset === "citations") {
+      setFilters({ ...base, sort: "citations" });
+    }
+  };
+
+  const clearFilters = () => {
+    setFilters({ application: "", species: "", host: "", clonality: "", sort: "score", page: 1 });
+  };
+
   if (loading) return <div className="loading">Loading...</div>;
   if (!target) return <div className="error">Target not found</div>;
 
@@ -110,6 +130,27 @@ export default function TargetPage() {
 
       {/* Toolbar: Filters + Export + Compare */}
       <section className="table-toolbar">
+        <div className="filter-presets">
+          <button type="button" className="preset-btn" onClick={() => applyPreset("top_score")}>
+            Top score
+          </button>
+          <button type="button" className="preset-btn" onClick={() => applyPreset("wb_human")}>
+            WB · Human
+          </button>
+          <button type="button" className="preset-btn" onClick={() => applyPreset("ihc_human")}>
+            IHC · Human
+          </button>
+          <button type="button" className="preset-btn" onClick={() => applyPreset("recent")}>
+            Most recent
+          </button>
+          <button type="button" className="preset-btn" onClick={() => applyPreset("citations")}>
+            Most citations
+          </button>
+          <button type="button" className="preset-btn preset-btn-ghost" onClick={clearFilters}>
+            Clear
+          </button>
+        </div>
+
         <div className="filters">
           <select
             value={filters.application}
@@ -140,6 +181,30 @@ export default function TargetPage() {
           </select>
 
           <select
+            value={filters.host}
+            onChange={(e) =>
+              setFilters({ ...filters, host: e.target.value, page: 1 })
+            }
+          >
+            <option value="">All Hosts</option>
+            <option value="Rabbit">Rabbit</option>
+            <option value="Mouse">Mouse</option>
+            <option value="Goat">Goat</option>
+            <option value="Rat">Rat</option>
+          </select>
+
+          <select
+            value={filters.clonality}
+            onChange={(e) =>
+              setFilters({ ...filters, clonality: e.target.value, page: 1 })
+            }
+          >
+            <option value="">All Clonalities</option>
+            <option value="Monoclonal">Monoclonal</option>
+            <option value="Polyclonal">Polyclonal</option>
+          </select>
+
+          <select
             value={filters.sort}
             onChange={(e) =>
               setFilters({ ...filters, sort: e.target.value, page: 1 })
@@ -160,6 +225,16 @@ export default function TargetPage() {
           {compareSet.size >= 2 && (
             <button className="compare-launch-btn" onClick={goCompare}>
               Compare {compareSet.size} antibodies →
+            </button>
+          )}
+          {compareSet.size > 0 && (
+            <button
+              type="button"
+              className="compare-clear-btn"
+              onClick={() => setCompareSet(new Set())}
+              title="Clear comparison selection"
+            >
+              Clear compare
             </button>
           )}
         </div>

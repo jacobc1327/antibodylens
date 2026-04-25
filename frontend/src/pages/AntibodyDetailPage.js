@@ -4,11 +4,13 @@ import { getAntibodyDetail } from "../utils/api";
 import BookmarkButton from "../components/BookmarkButton.js";
 
 function fmt1(x) {
+  if (x === null || x === undefined) return null;
   const n = Number(x);
   return Number.isFinite(n) ? n.toFixed(1) : null;
 }
 
 function fmt0(x) {
+  if (x === null || x === undefined) return null;
   const n = Number(x);
   return Number.isFinite(n) ? n.toFixed(0) : null;
 }
@@ -18,6 +20,7 @@ export default function AntibodyDetailPage() {
   const [antibody, setAntibody] = useState(null);
   const [validations, setValidations] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [showHow, setShowHow] = useState(false);
 
   useEffect(() => {
     async function load() {
@@ -36,6 +39,12 @@ export default function AntibodyDetailPage() {
 
   if (loading) return <div className="loading">Loading...</div>;
   if (!antibody) return <div className="error">Antibody not found</div>;
+
+  const totalCitations = validations.reduce((s, v) => s + (Number(v.citation_count) || 0), 0);
+  const distinctApps = new Set(validations.map((v) => v.application).filter(Boolean)).size;
+  const latestYear = validations.reduce((m, v) => Math.max(m, Number(v.pub_year) || 0), 0) || null;
+  const positiveCount = validations.reduce((s, v) => s + (v.validated_positive ? 1 : 0), 0);
+  const positiveRate = validations.length ? (positiveCount / validations.length) * 100 : null;
 
   return (
     <div className="antibody-detail-page">
@@ -71,9 +80,48 @@ export default function AntibodyDetailPage() {
 
       {/* Confidence score breakdown */}
       <section className="score-breakdown">
-        <h2>
-          Confidence Score: {fmt1(antibody.overall_score) ?? "—"} / 10
-        </h2>
+        <div className="score-breakdown-head">
+          <h2>
+            Confidence Score: {fmt1(antibody.overall_score) ?? "—"} / 10
+          </h2>
+          <button
+            type="button"
+            className="score-how-btn"
+            onClick={() => setShowHow((v) => !v)}
+            aria-expanded={showHow}
+          >
+            {showHow ? "Hide" : "How is this computed?"}
+          </button>
+        </div>
+
+        {showHow && (
+          <div className="score-how">
+            <div className="score-how-grid">
+              <div className="score-how-card">
+                <div className="score-how-title">Inputs (this antibody)</div>
+                <div className="score-how-row"><span>Total validations</span><strong>{validations.length}</strong></div>
+                <div className="score-how-row"><span>Distinct assays</span><strong>{distinctApps}</strong></div>
+                <div className="score-how-row"><span>Total citations</span><strong>{totalCitations}</strong></div>
+                <div className="score-how-row"><span>Latest year</span><strong>{latestYear ?? "—"}</strong></div>
+                <div className="score-how-row"><span>Positive rate</span><strong>{positiveRate === null ? "—" : `${positiveRate.toFixed(0)}%`}</strong></div>
+              </div>
+
+              <div className="score-how-card">
+                <div className="score-how-title">Score components (0–10)</div>
+                <div className="score-how-row"><span>Citations score</span><strong>{fmt1(antibody.citation_score) ?? "—"}</strong></div>
+                <div className="score-how-row"><span>Application breadth</span><strong>{fmt1(antibody.application_breadth) ?? "—"}</strong></div>
+                <div className="score-how-row"><span>Recency score</span><strong>{fmt1(antibody.recency_score) ?? "—"}</strong></div>
+                <div className="score-how-row"><span>Positive rate</span><strong>{fmt0(antibody.positive_rate) ? `${fmt0(antibody.positive_rate)}%` : "—"}</strong></div>
+              </div>
+            </div>
+
+            <div className="score-how-foot">
+              The overall score is a weighted combination of citations, assay breadth, recency, and positive rate.
+              (In this demo, validations are synthetic; the calculation is deterministic given the inputs.)
+            </div>
+          </div>
+        )}
+
         <div className="score-bars">
           <div className="score-item">
             <label>Citations</label>

@@ -36,6 +36,16 @@ CLONALITIES = ["Monoclonal", "Polyclonal"]
 APPLICATIONS = ["WB", "IHC", "IF", "FC", "ChIP", "ELISA", "IP"]
 SPECIES_TESTED = ["Human", "Mouse", "Rat"]
 
+
+def allowed_applications_for_seed_index(index: int) -> list[str]:
+    """Exactly three assay types per seed target, rotated so Living Cell filters hide real subsets.
+
+    (Random 4-of-7 still made almost every target positive for WB/IP/etc. after aggregation.)
+    """
+    n = len(APPLICATIONS)
+    start = (index * 2) % n
+    return [APPLICATIONS[(start + j) % n] for j in range(3)]
+
 JOURNALS = [
     "Nature", "Science", "Cell", "PNAS", "Nature Methods",
     "Journal of Biological Chemistry", "Cancer Research",
@@ -108,15 +118,19 @@ def generate_antibodies(target_id: int, gene_name: str) -> list[dict]:
     return antibodies
 
 
-def generate_validations(antibody_id: int) -> list[dict]:
-    """Generate synthetic validation/publication records."""
+def generate_validations(antibody_id: int, allowed_applications: list[str]) -> list[dict]:
+    """Generate synthetic validation/publication records.
+
+    allowed_applications: each target only draws from a subset of assay types so
+    aggregate per-target counts differ by application (Living Cell filters work).
+    """
     num = random.randint(1, 15)
     validations = []
     for _ in range(num):
         year = random.randint(2010, 2025)
         validations.append({
             "antibody_id": antibody_id,
-            "application": random.choice(APPLICATIONS),
+            "application": random.choice(allowed_applications),
             "species_tested": random.choice(SPECIES_TESTED),
             "publication_doi": f"10.{random.randint(1000,9999)}/{''.join(random.choices('abcdefghijklmnopqrstuvwxyz0123456789', k=8))}",
             "pubmed_id": str(random.randint(20000000, 39999999)),
@@ -134,9 +148,14 @@ def main():
     conn = psycopg2.connect(DATABASE_URL)
     cur = conn.cursor()
 
+    # Each run used to *append* antibodies/validations, so every assay appeared for every
+    # target after a few seeds (cell-map filters looked broken). Reset that slice of data.
+    print("Clearing antibodies & validations (CASCADE removes validations + confidence_scores)…")
+    cur.execute("DELETE FROM antibodies")
+
     print(f"Fetching {len(SEED_TARGETS)} targets from UniProt...\n")
 
-    for gene in SEED_TARGETS:
+    for ti, gene in enumerate(SEED_TARGETS):
         print(f"  Fetching {gene}...")
         target = fetch_uniprot_target(gene)
         if not target:
@@ -150,6 +169,8 @@ def main():
         """, target)
         target_id = cur.fetchone()[0]
 
+        allowed_apps = allowed_applications_for_seed_index(ti)
+
         antibodies = generate_antibodies(target_id, gene)
         for ab in antibodies:
             cur.execute("""
@@ -161,7 +182,7 @@ def main():
             """, ab)
             ab_id = cur.fetchone()[0]
 
-            validations = generate_validations(ab_id)
+            validations = generate_validations(ab_id, allowed_apps)
             for val in validations:
                 cur.execute("""
                     INSERT INTO validations (antibody_id, application, species_tested,
